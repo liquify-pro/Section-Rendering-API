@@ -1,21 +1,20 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const filterWrapper = document.querySelectorAll('[li-render-filter="wrapper"]');
-  const recWrapper = document.querySelectorAll('[li-render-recommended="wrapper"]')
-  const customWrapper = document.querySelectorAll('[li-render-custom="wrapper"]')
-  const searchWrapper = document.querySelectorAll('[li-render-search="wrapper"]')
+  const filterWrapper = document.querySelectorAll('[li-render="filter-wrapper"]');
+  const recWrapper = document.querySelectorAll('[li-render="recommendations-wrapper"]')
+  const customWrapper = document.querySelectorAll('[li-render="custom-wrapper"]')
+  const searchWrapper = document.querySelectorAll('[li-render="predictive-search-wrapper"]')
 
   let filterQuery = new URLSearchParams(window.location.search);
   let abortController = new AbortController();
   const abortSignal = abortController.signal;
-  const parser = new DOMParser();
 
   const createSearchQuery = (wrapper) => {
     const paramMap = {
-      'li-render-search-type': 'resources[type]',
-      'li-render-search-limit': 'resources[limit]',
-      'li-render-search-limit-scope': 'resources[limit_scope]',
-      'li-render-search-unavailable': 'resources[options][unavailable_products]',
-      'li-render-search-fields': 'resources[options][fields]'
+      'li-render-rt': 'resources[type]',
+      'li-render-rl': 'resources[limit]',
+      'li-render-rls': 'resources[limit_scope]',
+      'li-render-roup': 'resources[options][unavailable_products]',
+      'li-render-rof': 'resources[options][fields]'
     };
 
     let searchQuery = new URLSearchParams();
@@ -50,9 +49,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const setCheckboxFilter = () => {
-    document.querySelectorAll('[li-render-filter="filter"]').forEach(element => {
-      const param = element.getAttribute('li-render-filter-name')
-      const value = element.getAttribute('li-render-filter-value')
+    document.querySelectorAll('[li-render="filter"]').forEach(element => {
+      const param = element.getAttribute('li-render-param-name')
+      const value = element.getAttribute('li-render-value')
       const customCheckbox = element.parentElement.querySelector('div')
 
       if (!param || !value) return
@@ -72,34 +71,28 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const setPriceFilter = () => {
-    document.querySelectorAll('[li-render-filter="price-min"]').forEach(element => {
-      const param = element.getAttribute("li-render-filter-min-param") || 'filter.v.price.gte'
-      if (filterQuery.has(param)) {
-        element.value = filterQuery.get(param)
-      }
-    })
+    if (filterQuery.has('filter.v.price.gte')) {
+      document.querySelectorAll('[li-render="price-min"]').forEach(element => {
+        element.value = filterQuery.get('filter.v.price.gte')
+      })
+    }
 
-    document.querySelectorAll('[li-render-filter="price-max"]').forEach(element => {
-      const param = element.getAttribute("li-render-filter-max-param") || 'filter.v.price.lte'
-      if (filterQuery.has(param)) {
-        element.value = filterQuery.get(param)
-      }
-    })
+    if (filterQuery.has('filter.v.price.lte')) {
+      document.querySelectorAll('[li-render="price-max"]').forEach(element => {
+        element.value = filterQuery.get('filter.v.price.lte')
+      })
+    }
   }
 
 
   const renderSection = async (fetchUrl, wrapper, target = null, type = '') => {
-    document.dispatchEvent(new CustomEvent('liquify:before-render', {
-      bubbles: true,
-      cancelable: false
-    }));
-
     try {
       if (abortController) {
         abortController.abort();
       }
 
       abortController = new AbortController();
+
       const response = await fetch(fetchUrl, { abortSignal });
 
       if (!response.ok) {
@@ -107,16 +100,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       let newHtml;
-
       try {
         newHtml = await response.text();
       } catch (error) {
         throw new Error('[liquify][renderSection] Failed to parse response text.');
       }
 
-
+      const parser = new DOMParser();
       let newDocument;
-
       try {
         newDocument = parser.parseFromString(newHtml, 'text/html');
       } catch (error) {
@@ -155,20 +146,20 @@ document.addEventListener('DOMContentLoaded', () => {
             })
 
             // Set active filter states or disable all inactive filters and show the filter count
-            newDocument.querySelectorAll('[li-render-filter="filter"]').forEach(element => {
-              const param = element.getAttribute('li-render-filter-name')
-              const value = element.getAttribute('li-render-filter-value')
-              const countSource = element.getAttribute('li-render-filter-count')
+            newDocument.querySelectorAll('[li-render="filter"]').forEach(element => {
+              const param = element.getAttribute('li-render-param-name')
+              const value = element.getAttribute('li-render-value')
+              const countSource = element.getAttribute('li-render-count')
               const countNumber = parseInt(countSource, 10)
 
               if (!param || !value || !countSource) {
-                console.log(`[liquify][renderSection] If you want to show the counts, please add the following attributes to the li-render-filter="filter" element: 
-                  li-render-filter-count="{{ filter_value.count }}", li-render-filter-value="{{ filter_value.value }}", li-render-filter-name="{{ filter_value.param_name }}".`)
+                console.log(`[liquify][renderSection] If you want to show the counts, please add the following attributes to the li-render="filter" element: 
+                  li-render-count="{{ filter_value.count }}", li-render-value="{{ filter_value.value }}", li-render-param-name="{{ filter_value.param_name }}".`)
                 return
               }
 
-              document.querySelectorAll(`[li-render-filter-name="${param}"][li-render-filter-value="${value}"]`).forEach(filterElement => {
-                const countTarget = filterElement.parentElement.querySelector('[li-render-filter="count-value"]')
+              document.querySelectorAll(`[li-render-param-name="${param}"][li-render-value="${value}"]`).forEach(filterElement => {
+                const countTarget = filterElement.parentElement.querySelector('[li-render="count-value"]')
                 countNumber === 0 ? filterElement.classList.add('is-disabled') : filterElement.classList.remove('is-disabled')
                 if (countTarget) countTarget.textContent = countNumber
               })
@@ -202,11 +193,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   searchWrapper.forEach((wrapper) => {
-    const input = wrapper.querySelector('[li-render-search="input"]');
+    const input = wrapper.querySelector('[li-render="predictive-search-input"]');
     const sectionId = getSectionId(wrapper)
     const searchQuery = createSearchQuery(wrapper)
-
-    console.log(wrapper, input, searchQuery)
 
     if (input) {
       input.addEventListener(
@@ -217,7 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
           searchQuery.size === 0 ? searchUrl += `?q=${searchTerm}&section_id=${sectionId}` : searchUrl += `?q=${searchTerm}&section_id=${sectionId}&${searchQuery}`
 
           if (searchTerm) {
-            renderSection(searchUrl, '[li-render-search="wrapper"]', '[li-render-search="target"]', 'search')
+            renderSection(searchUrl, '[li-render="predictive-search-wrapper"]', '[li-render="predictive-search-target"]', 'predictive-search')
           };
           console.log('[liquify][searchWrapper] Search path:', searchUrl)
         }, 300)
@@ -229,14 +218,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const initializeFilters = () => {
     filterWrapper.forEach((wrapper) => {
-      const submitButtons = wrapper.querySelectorAll('[li-render-filter="submit-button"]')
-      const filterTarget = wrapper.querySelector('[li-render-filter="target"]')
+      const submitButtons = wrapper.querySelectorAll('[li-render="submit-button"]')
+      const filterTarget = wrapper.querySelector('[li-render="filter-target"]')
       const sectionId = getSectionId(wrapper)
 
       const handleTarget = (completeFilterQuery) => {
         console.log('[liquify][filterWrapper] Filter path:', completeFilterQuery)
         history.replaceState(null, '', window.location.pathname + (filterQuery.size > 0 ? '?' + filterQuery : ''));
-        filterTarget ? renderSection(completeFilterQuery, '[li-render-filter="wrapper"]', '[li-render-filter="target"]', 'filter') : renderSection(completeFilterQuery, '[li-render-filter="wrapper"]', undefined, 'filter')
+        filterTarget ? renderSection(completeFilterQuery, '[li-render="filter-wrapper"]', '[li-render="filter-target"]', 'filter') : renderSection(completeFilterQuery, '[li-render="filter-wrapper"]', undefined, 'filter')
       }
 
       const getQueryParam = (param = '', value = '', render = false, uniqueValue = false, priceRemove = false) => {
@@ -270,39 +259,45 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       wrapper
-        .querySelectorAll('[li-render-filter="filter"]')
+        .querySelectorAll('[li-render="filter"]')
         .forEach((element) => {
-          const trigger = element.getAttribute('li-render-filter-trigger') || "change"
-          console.log("Trigger", element)
+          const trigger = element.getAttribute('li-render-tigger') || "change"
           element.addEventListener(trigger, (e) => {
-            console.log("Triggered filter:", element)
-            const param = element.getAttribute('li-render-filter-name')
-            const value = element.getAttribute('li-render-filter-value')
+            const param = element.getAttribute('li-render-param-name')
+            const value = element.getAttribute('li-render-value')
             getQueryParam(param, value);
           });
         });
 
       wrapper
-        .querySelectorAll('[li-render-filter="sort"]')
+        .querySelectorAll('[li-render="sort-select"]')
         .forEach((element) => {
-          const trigger = element.getAttribute('li-render-filter-trigger') || "change"
-          element.addEventListener(trigger, (e) => {
+          element.addEventListener("change", (e) => {
             getQueryParam('sort_by', element.value, true, true);
           });
         });
 
       wrapper
-        .querySelectorAll('[li-render-filter="remove"]')
+        .querySelectorAll('[li-render="sort-radio"]')
+        .forEach((element) => {
+          element.addEventListener("change", (e) => {
+            const value = element.getAttribute('li-render-value')
+            getQueryParam('sort_by', value, true, true);
+          });
+        });
+
+      wrapper
+        .querySelectorAll('[li-render="filter-remove"]')
         .forEach((element) => {
           element.addEventListener("click", (e) => {
-            const removeFilter = element.getAttribute('li-render-filter-value')
-            renderSection(removeFilter, '[li-render-filter="wrapper"]', undefined, 'filter');
+            const removeFilter = element.getAttribute('li-render-value')
+            renderSection(removeFilter, '[li-render="filter-wrapper"]', undefined, 'filter');
             history.replaceState(null, '', removeFilter);
           });
         });
 
 
-      wrapper.querySelectorAll('[li-render-filter="search"]').forEach(element => {
+      wrapper.querySelectorAll('[li-render="filter-search"]').forEach(element => {
         const form = element.closest('form')
         const searchQuery = createSearchQuery(wrapper)
         let inputValue = element.value
@@ -329,34 +324,40 @@ document.addEventListener('DOMContentLoaded', () => {
       })
 
       wrapper
-        .querySelectorAll('[li-render-filter="clear-all"]')
+        .querySelectorAll('[li-render="clear-all"]')
         .forEach((element) => {
           element.addEventListener('click', (e) => {
+            const value = element.getAttribute('li-render-value')
+
+            if (!value) {
+              console.warn(`[liquify][filterWrapper] Unable to clear all filters because of one missing attribute.
+                Please add the attribute li-render-value="{{ routes.search_url }}" on search pages or li-render-value="{{ collection.url }}" on collection pages to the li-render="clear-all" button`)
+              return
+            }
+
             filterQuery = new URLSearchParams()
             history.replaceState(null, '', window.location.pathname);
-            renderSection(window.location.pathname + '?section_id=' + sectionId, '[li-render-filter="wrapper"]', undefined, 'filter')
+            renderSection(value, '[li-render="filter-wrapper"]', undefined, 'filter')
           });
         });
 
-      wrapper.querySelectorAll('[li-render-filter="price-min"]').forEach(element => {
-        const param = element.getAttribute("li-render-filter-min-param") || 'filter.v.price.gte'
+      wrapper.querySelectorAll('[li-render="price-min"]').forEach(element => {
         element.addEventListener('blur', () => {
           if (element.value.length === 0) {
-            getQueryParam(param, element.value, false, true, true);
+            getQueryParam('filter.v.price.gte', element.value, false, true, true);
             return
           }
-          getQueryParam(param, element.value, false, true)
+          getQueryParam('filter.v.price.gte', element.value, false, true)
         })
       })
 
-      wrapper.querySelectorAll('[li-render-filter="price-max"]').forEach(element => {
-        const param = element.getAttribute("li-render-filter-max-param") || 'filter.v.price.lte'
+      wrapper.querySelectorAll('[li-render="price-max"]').forEach(element => {
         element.addEventListener('blur', () => {
           if (element.value.length === 0) {
-            getQueryParam(param, element.value, false, true, true);
+            getQueryParam('filter.v.price.lte', element.value, false, true, true);
             return
           }
-          getQueryParam(param, element.value, false, true)
+          getQueryParam('filter.v.price.lte', element.value, false, true)
         })
       })
     })
@@ -364,12 +365,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   recWrapper.forEach((wrapper) => {
-    const path = wrapper.getAttribute('li-render-recommended-path')
+    const path = wrapper.getAttribute('li-render-path')
     const sectionId = getSectionId(wrapper) || ''
-    const productId = wrapper.getAttribute('li-render-recommended-product')
-    const limit = wrapper.getAttribute('li-render-recommended-limit') || 4;
-    const intent = wrapper.getAttribute('li-render-recommended-intent') || 'related';
-    const recTarget = wrapper.querySelector('[li-render-recommended="target"]')
+    const productId = wrapper.getAttribute('li-render-product-id')
+    const limit = wrapper.getAttribute('li-render-limit') || 4;
+    const intent = wrapper.getAttribute('li-render-intent') || 'related';
 
     if (sectionId === '') {
       console.warn(
@@ -380,14 +380,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (path === '' || !path) {
       console.warn(
-        '[liquify][recWrapper] Unable to render product recommendations because of missing path. Please add the attribute li-render-recommended-path="{{ routes.product_recommendations_url }}" to the li-render-recommended="wrapper" element'
+        '[liquify][recWrapper] Unable to render product recommendations because of missing path. Please add the attribute li-render-path="{{ routes.product_recommendations_url }}" to the li-render="recommendations-wrapper" element'
       )
       return
     }
 
     if (productId === '' || !productId) {
       console.warn(
-        '[liquify][recWrapper] Unable to render product recommendations because of missing product ID. Please add the attribute li-render-recommended-product="{{ product.id }}" to the li-render-recommended="wrapper" element'
+        '[liquify][recWrapper] Unable to render product recommendations because of missing product ID. Please add the attribute li-render-product-id="{{ product.id }}" to the li-render="recommendations-wrapper" element'
       )
       return
     }
@@ -399,30 +399,25 @@ document.addEventListener('DOMContentLoaded', () => {
     recQuery.append('intent', intent)
 
     const fetchUrl = `${path}?${recQuery}`;
-    recTarget ? renderSection(fetchUrl, '[li-render-recommended="wrapper"]', '[li-render-recommended="target"]', 'recommended') : renderSection(fetchUrl, '[li-render-recommended="wrapper"]', undefined, 'recommended');
+    renderSection(fetchUrl, '[li-render="recommendations-wrapper"]', undefined, 'recommendations');
     console.log('[liquify][recWrapper] Recommendations Path:', fetchUrl)
   });
 
 
 
   customWrapper.forEach(wrapper => {
-    const target = wrapper.querySelector('[li-render-custom="target"]')
+    const target = wrapper.querySelector('[li-render="custom-target"]')
     let currentSearchParams = new URLSearchParams(window.location.search)
 
     const initializeCustomTrigger = () => {
-      wrapper.querySelectorAll('[li-render-custom-trigger]').forEach(element => {
-        const triggerEvent = element.getAttribute('li-render-custom-trigger') || "change"
-        const value = element.getAttribute('li-render-custom-value')
+      wrapper.querySelectorAll('[li-render-trigger]').forEach(element => {
+        const triggerEvent = element.getAttribute('li-render-trigger')
+        const value = element.getAttribute('li-render-value')
         let newSerchParams = new URLSearchParams(value)
-
-        if (!value) {
-          '[liquify][customWrapper] Unable to render custom section because of missing value. Please add the attribute li-render-custom-value="{{ product.url }}?section_id={{ section.id }}&variant={{ value.variant.id }}" (example value) to the li-render-custom-trigger element'
-          return
-        }
 
         element.addEventListener(triggerEvent, (e) => {
           console.log('[liquify][customWrapper] Custom Path:', value)
-          target ? renderSection(value, '[li-render-custom="wrapper"]', '[li-render-custom="target"]', 'custom') : renderSection(value, '[li-render-custom="wrapper"]', undefined, 'custom')
+          target ? renderSection(value, '[li-render="custom-wrapper"]', '[li-render="custom-target"]', 'custom') : renderSection(value, '[li-render="custom-wrapper"]', undefined, 'custom')
 
           if (newSerchParams.has('variant')) {
             const variantId = newSerchParams.get('variant')
@@ -433,7 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
       })
     }
 
-    if (wrapper.hasAttribute('li-render-custom-reinit')) {
+    if (wrapper.getAttribute('li-render-re-init')) {
       document.addEventListener('liquify:custom-rendered', (e) => {
         initializeCustomTrigger()
       })
@@ -448,13 +443,6 @@ document.addEventListener('DOMContentLoaded', () => {
   setCheckboxFilter();
 });
 
-document.addEventListener("liquify:before-render", () => {
-  console.log("[liquify][renderSection] Before render event fired")
-})
-
-document.addEventListener("liquify:sections-rendered", () => {
-  console.log("[liquify][renderSection] Section rendered event fired")
-})
 
 document.addEventListener("liquify:filter-rendered", () => {
   console.log("[liquify][renderSection] Filter event fired")
@@ -464,11 +452,11 @@ document.addEventListener("liquify:custom-rendered", () => {
   console.log("[liquify][renderSection] Custom event fired")
 })
 
-document.addEventListener("liquify:search-rendered", () => {
-  console.log("[liquify][renderSection] Search event fired")
+document.addEventListener("liquify:predictive-search-rendered", () => {
+  console.log("[liquify][renderSection] Predictive search event fired")
 })
 
-document.addEventListener("liquify:recommended-rendered", () => {
-  console.log("[liquify][renderSection] Recommended event fired")
+document.addEventListener("liquify:recommendations-rendered", () => {
+  console.log("[liquify][renderSection] Recommendations event fired")
 })
 

@@ -111,6 +111,9 @@
   };
 
   const morph = (fromEl, toEl) => {
+    // Leave JS-managed subtrees (sliders, maps, …) untouched during a morph.
+    if (fromEl.nodeType === 1 && fromEl.hasAttribute('li-render-morph-ignore')) return;
+
     if (fromEl.nodeName !== toEl.nodeName) {
       fromEl.replaceWith(toEl.cloneNode(true));
       return;
@@ -193,8 +196,8 @@
 
       if (typeof onDocument === 'function') onDocument(newDocument);
 
-      emit('liquiflow:sections-rendered', { url, type });
-      if (type) emit(`liquiflow:${type}-rendered`, { url });
+      emit('liquiflow:sections-rendered', { url, type, morph: !!useMorph });
+      if (type) emit(`liquiflow:${type}-rendered`, { url, morph: !!useMorph });
 
       return newDocument;
     } catch (error) {
@@ -481,27 +484,29 @@
     },
 
     init(wrapper) {
-      const input = wrapper.querySelector('[li-render-search="input"]');
-      if (!input) return;
+      const inputs = wrapper.querySelectorAll('[li-render-search="input"]');
+      if (inputs.length === 0) return;
 
       const sectionId = getSectionId(wrapper);
       const resourceQuery = this.buildResourceQuery(wrapper);
       const morphOn = wrapper.hasAttribute('li-render-morph') || config.morph;
 
-      input.addEventListener('input', debounce(() => {
-        const term = input.value.trim();
-        if (!term) return;
-        const url = `${root()}search/suggest?q=${encodeURIComponent(term)}&section_id=${sectionId}${resourceQuery ? `&${resourceQuery}` : ''}`;
-        renderSection({
-          url,
-          wrapperSelector: '[li-render-search="wrapper"]',
-          targetSelector: '[li-render-search="target"]',
-          type: 'search',
-          channel: `search:${sectionId}`,
-          morph: morphOn,
-        });
-      }, config.inputDebounce));
-    },
+      inputs.forEach((input) => {
+        input.addEventListener('input', debounce(() => {
+          const term = input.value.trim();
+          if (!term) return;
+          const url = `${root()}search/suggest?q=${encodeURIComponent(term)}&section_id=${sectionId}${resourceQuery ? `&${resourceQuery}` : ''}`;
+          renderSection({
+            url,
+            wrapperSelector: '[li-render-search="wrapper"]',
+            targetSelector: '[li-render-search="target"]',
+            type: 'search',
+            channel: `search:${sectionId}`,
+            morph: morphOn,
+          });
+        }, config.inputDebounce));
+      })
+    }
   };
 
   /* ================================================================== *
@@ -538,7 +543,7 @@
 
   const Pagination = {
     init(wrapper, index) {
-      const sectionId = wrapper.getAttribute('li-render-paginate-id') || getSectionId(wrapper);
+      const sectionId = wrapper.getAttribute('li-render-section-id') || getSectionId(wrapper);
       const list = wrapper.querySelector('[li-render-paginate="list"]');
       const button = wrapper.querySelector('[li-render-paginate="button"]');
       const countDisplay = wrapper.querySelector('[li-render-paginate="count"]');
@@ -640,7 +645,7 @@
 
   const Product = {
     init(wrapper) {
-      const sectionId = wrapper.getAttribute('li-render-product-id') || getSectionId(wrapper);
+      const sectionId = wrapper.getAttribute('li-render-section-id') || getSectionId(wrapper);
       const productUrl = wrapper.getAttribute('li-render-product-url') || window.location.pathname;
       const morphOn = wrapper.hasAttribute('li-render-morph') || config.morph;
       if (!sectionId) return warn('[product] Missing section id.');
@@ -689,6 +694,10 @@
           cache.set(url.toString(), doc);
         }
 
+        // Whether existing nodes were kept (morph) or replaced. A sibling swap
+        // rebuilds the whole section, so it never counts as a morph.
+        const didMorph = morphOn && !isSibling;
+
         if (isSibling) {
           // Combined listings: swap the whole product section for the sibling.
           const newSection = doc.querySelector('[li-render-product="wrapper"]');
@@ -714,8 +723,8 @@
 
         if (control?.id) document.getElementById(control.id)?.focus();
 
-        emit('liquiflow:sections-rendered', { url: url.toString(), type: 'product-sections' });
-        emit('liquiflow:product-sections-rendered', { sectionId, variantId });
+        emit('liquiflow:sections-rendered', { url: url.toString(), type: 'product-sections', morph: didMorph });
+        emit('liquiflow:product-sections-rendered', { sectionId, variantId, morph: didMorph });
       } catch (error) {
         if (error.name !== 'AbortError') console.error('[liquiflow]', error.message || error);
       }

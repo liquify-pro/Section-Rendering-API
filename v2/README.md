@@ -97,6 +97,31 @@ markup and a diff against the server HTML would fight those transforms:
 
 ---
 
+## Value sync (`li-render-source` → `li-render-target`)
+
+After **every** render (filter, search, product, pagination) named values are copied
+out of the response into live elements anywhere on the page — even outside the
+swapped region. Use it for things like a product count shown next to a filter button
+or in a drawer header. Replaces v1's `li-render-custom-source` / `-target`.
+
+```html
+<!-- In the rendered section (the response): the value carrier -->
+<span li-render-source="count">{{ collection.products_count }} products</span>
+
+<!-- Anywhere on the page: the live target(s) that receive it -->
+<span li-render-target="count"></span>
+```
+
+- The **source** value is the element's `value` (for `input`/`select`/`textarea`)
+  or its trimmed `textContent`.
+- Each **target** writes as `textContent` by default. Set `li-render-target-mode`
+  to `html` (innerHTML) or to any attribute name (e.g. `title`, `aria-label`) to
+  write there instead.
+- Multiple targets may share one name. Writes are skipped when the value is
+  unchanged, so untouched targets never trigger a reflow.
+
+---
+
 ## Filter module
 
 Wrapper: `li-render-filter="wrapper"`.

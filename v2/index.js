@@ -52,6 +52,43 @@
     document.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, cancelable: false }));
   };
 
+  /* --- Text/attribute sync (li-render-source → li-render-target) ---- *
+   * Copies named values out of a rendered response into live elements
+   * anywhere on the page (e.g. a "42 products" count shown outside the
+   * swapped region). Replaces v1's li-render-custom-source/target.
+   * -------------------------------------------------------------------- */
+
+  const readSourceValue = (el) =>
+    (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)
+      ? el.value : el.textContent.trim();
+
+  const syncTargets = (sourceRoot) => {
+    const sources = sourceRoot.querySelectorAll('[li-render-source]');
+    if (!sources.length) return;
+
+    // One pass to collect values, one pass to write them — with a change
+    // guard so untouched targets never trigger a reflow.
+    const values = new Map();
+    sources.forEach((el) => {
+      const name = el.getAttribute('li-render-source');
+      if (name && !values.has(name)) values.set(name, readSourceValue(el));
+    });
+
+    document.querySelectorAll('[li-render-target]').forEach((target) => {
+      const name = target.getAttribute('li-render-target');
+      if (!values.has(name)) return;
+      const value = values.get(name);
+      const mode = target.getAttribute('li-render-target-mode') || 'text';
+      if (mode === 'text') {
+        if (target.textContent !== value) target.textContent = value;
+      } else if (mode === 'html') {
+        if (target.innerHTML !== value) target.innerHTML = value;
+      } else if (target.getAttribute(mode) !== value) {
+        target.setAttribute(mode, value); // mode = attribute name
+      }
+    });
+  };
+
   /* --- Result cache (LRU, keyed by fetch URL) ----------------------- */
 
   const cache = {
@@ -195,6 +232,7 @@
       });
 
       if (typeof onDocument === 'function') onDocument(newDocument);
+      syncTargets(newDocument);
 
       emit('liquiflow:sections-rendered', { url, type, morph: !!useMorph });
       if (type) emit(`liquiflow:${type}-rendered`, { url, morph: !!useMorph });
@@ -603,6 +641,7 @@
               // Liquid only renders the button while a next page exists.
               if (!newWrapper.querySelector('[li-render-paginate="button"]')) button.style.display = 'none';
 
+              syncTargets(doc);
               emit('liquiflow:paginate-rendered', { url, mode: 'load-more' });
               emit('liquiflow:sections-rendered', { url, type: 'paginate' });
             } else {
@@ -722,6 +761,7 @@
         }
 
         if (control?.id) document.getElementById(control.id)?.focus();
+        syncTargets(doc);
 
         emit('liquiflow:sections-rendered', { url: url.toString(), type: 'product-sections', morph: didMorph });
         emit('liquiflow:product-sections-rendered', { sectionId, variantId, morph: didMorph });

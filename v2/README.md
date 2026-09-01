@@ -12,10 +12,10 @@ It self-initialises on `DOMContentLoaded` and re-initialises sections on
 
 ---
 
-## Public API: `window.liquiflow`
+## Public API: `window.liquiflowRenderer`
 
 ```js
-window.liquiflow = {
+window.liquiflowRenderer = {
   version,                       // "2.1.0"
   config,                        // global defaults (see below)
   state: { filters: { … } },     // active filters per section id

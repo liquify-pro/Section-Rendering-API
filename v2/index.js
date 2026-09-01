@@ -11,7 +11,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.0.0';
+  const VERSION = '2.1.0';
 
   const config = {
     debug: false,
@@ -62,20 +62,26 @@
     (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)
       ? el.value : el.textContent.trim();
 
+  // v1 spelled these li-render-custom-source/-target. Both are accepted, so a
+  // theme that has not been migrated keeps syncing instead of failing silently.
+  const SOURCE_SELECTOR = '[li-render-source], [li-render-custom-source]';
+  const TARGET_SELECTOR = '[li-render-target], [li-render-custom-target]';
+  const roleName = (el, attr) => el.getAttribute(attr) || el.getAttribute(attr.replace('li-render-', 'li-render-custom-'));
+
   const syncTargets = (sourceRoot) => {
-    const sources = sourceRoot.querySelectorAll('[li-render-source]');
+    const sources = sourceRoot.querySelectorAll(SOURCE_SELECTOR);
     if (!sources.length) return;
 
     // One pass to collect values, one pass to write them — with a change
     // guard so untouched targets never trigger a reflow.
     const values = new Map();
     sources.forEach((el) => {
-      const name = el.getAttribute('li-render-source');
+      const name = roleName(el, 'li-render-source');
       if (name && !values.has(name)) values.set(name, readSourceValue(el));
     });
 
-    document.querySelectorAll('[li-render-target]').forEach((target) => {
-      const name = target.getAttribute('li-render-target');
+    document.querySelectorAll(TARGET_SELECTOR).forEach((target) => {
+      const name = roleName(target, 'li-render-target');
       if (!values.has(name)) return;
       const value = values.get(name);
       const mode = target.getAttribute('li-render-target-mode') || 'text';
@@ -580,99 +586,345 @@
    * ================================================================== */
 
   const Pagination = {
-    init(wrapper, index) {
-      const sectionId = wrapper.getAttribute('li-render-section-id') || getSectionId(wrapper);
-      const list = wrapper.querySelector('[li-render-paginate="list"]');
-      const button = wrapper.querySelector('[li-render-paginate="button"]');
-      const countDisplay = wrapper.querySelector('[li-render-paginate="count"]');
-      const pageParam = wrapper.getAttribute('li-render-paginate-page-param') || 'page';
-      const morphOn = wrapper.hasAttribute('li-render-morph') || config.morph;
+    wired: false,
+    wrapperSelector: '[li-render-paginate="wrapper"]',
+    itemSelector: '[li-render-paginate="item"]',
 
-      if (!sectionId || !list) return warn('[paginate] Missing section id or list element.');
-
-      const wrapperSelector = '[li-render-paginate="wrapper"]';
-      const itemSelector = '[li-render-paginate="item"]';
-
-      const updateCount = (loaded, total) => {
-        if (!countDisplay) return;
-        const template = countDisplay.getAttribute('li-render-paginate-count-text') || countDisplay.textContent;
-        countDisplay.textContent = template.replace('{loaded}', loaded).replace('{total}', total);
+    config(wrapper) {
+      return {
+        sectionId: wrapper.getAttribute('li-render-section-id') || getSectionId(wrapper),
+        pageParam: wrapper.getAttribute('li-render-paginate-page-param') || 'page',
+        morph: wrapper.hasAttribute('li-render-morph') || config.morph,
+        batch: this.batchSize(wrapper),
       };
+    },
 
-      // Load-more (append) mode.
-      if (button) {
-        let nextPage = (parseInt(new URLSearchParams(window.location.search).get(pageParam), 10) || 1) + 1;
-        let loaded = list.querySelectorAll(itemSelector).length;
+    /* --- Fixed batch size (li-render-paginate-batch="24") --------------
+     * A Shopify page holds N *products*, but a section may expand each one
+     * into a variable number of items — a tile per colour variant, say.
+     * Paginating by page then yields ragged batches (12 products can be
+     * anywhere from 12 to 40 tiles) and the grid grows unevenly.
+     *
+     * With a batch size the module renders exactly N items per view and per
+     * click: a page's surplus is parked in a buffer and further pages are
+     * fetched whenever the buffer runs short. Off (0) keeps the default
+     * one-page-per-click behaviour.
+     *
+     * Load-more only — numbered pagination (`link`) replaces the section.
+     * ------------------------------------------------------------------- */
+    batchSize(wrapper) {
+      const raw = parseInt(wrapper.getAttribute('li-render-paginate-batch'), 10);
+      return Number.isFinite(raw) && raw > 0 ? raw : 0;
+    },
 
-        button.addEventListener('click', async () => {
-          const params = new URLSearchParams(window.location.search);
-          params.set('section_id', sectionId);
-          params.set(pageParam, nextPage);
-          const url = `${window.location.pathname}?${params}`;
+    // Cells in the list that pagination does not own — promo tiles, an ad, a
+    // banner between products. They cannot be buffered (the section re-renders
+    // them per page), but they do occupy grid slots, so they count against the
+    // batch: with two promo tiles a batch of 24 renders 22 items and the grid
+    // still shows 24 cells. Direct children only; one child = one cell.
+    foreignCells(list) {
+      return [...list.children].filter((child) => !child.matches(this.itemSelector)).length;
+    },
 
-          emit('liquiflow:before-render', { url, type: 'paginate' });
-          emit('liquiflow:paginate-before-render', { url });
+    updateCount(wrapper, loaded, total) {
+      const countDisplay = wrapper.querySelector('[li-render-paginate="count"]');
+      if (!countDisplay) return;
+      const template = countDisplay.getAttribute('li-render-paginate-count-text') || countDisplay.textContent;
+      countDisplay.textContent = template.replace('{loaded}', loaded).replace('{total}', total);
+    },
 
-          const busyLabel = button.getAttribute('li-render-paginate-loading-text');
-          const idleLabel = button.textContent;
-          button.disabled = true;
-          if (busyLabel) button.textContent = busyLabel;
+    // Fetch one page's rendered section and return the matching wrapper + items.
+    async fetchPage(wrapper, page) {
+      const { sectionId, pageParam } = this.config(wrapper);
+      const params = new URLSearchParams(window.location.search);
+      params.set('section_id', sectionId);
+      params.set(pageParam, page);
+      const url = `${window.location.pathname}?${params}`;
 
-          try {
-            let doc = cache.get(url);
-            if (!doc) {
-              const response = await fetch(url, { signal: nextSignal(`paginate:${sectionId}`) });
-              if (!response.ok) throw new Error(`[paginate] Fetch failed (${response.status})`);
-              doc = parser.parseFromString(await response.text(), 'text/html');
-              cache.set(url, doc);
-            }
-
-            const newWrapper = doc.querySelectorAll(wrapperSelector)[index] || doc.querySelector(wrapperSelector);
-            const newItems = newWrapper ? newWrapper.querySelectorAll(itemSelector) : [];
-
-            if (newItems.length) {
-              newItems.forEach((item) => list.appendChild(document.importNode(item, true)));
-              loaded += newItems.length;
-              updateCount(loaded, newWrapper.querySelector('[li-render-paginate="total"]')?.value);
-              nextPage += 1;
-              button.disabled = false;
-              if (busyLabel) button.textContent = idleLabel;
-
-              // Liquid only renders the button while a next page exists.
-              if (!newWrapper.querySelector('[li-render-paginate="button"]')) button.style.display = 'none';
-
-              syncTargets(doc);
-              emit('liquiflow:paginate-rendered', { url, mode: 'load-more' });
-              emit('liquiflow:sections-rendered', { url, type: 'paginate' });
-            } else {
-              button.style.display = 'none';
-            }
-          } catch (error) {
-            if (error.name !== 'AbortError') console.error('[liquiflow]', error.message || error);
-            button.disabled = false;
-            if (busyLabel) button.textContent = idleLabel;
-          }
-        });
+      let doc = cache.get(url);
+      if (!doc) {
+        const response = await fetch(url, { signal: nextSignal(`paginate:${sectionId}:${page}`) });
+        if (!response.ok) throw new Error(`[paginate] Fetch failed (${response.status}) for ${url}`);
+        doc = parser.parseFromString(await response.text(), 'text/html');
+        cache.set(url, doc);
       }
 
-      // Numbered pagination (replace) mode.
-      wrapper.addEventListener('click', (e) => {
-        const link = e.target.closest('[li-render-paginate="link"]');
-        if (!link || !wrapper.contains(link)) return;
-        e.preventDefault();
-        const href = link.getAttribute('href') || link.getAttribute('li-render-paginate-value');
-        if (!href) return;
-        const parsed = new URL(href, window.location.origin);
-        parsed.searchParams.set('section_id', sectionId);
-        history.replaceState(null, '', href);
-        renderSection({
-          url: parsed.toString(),
-          wrapperSelector,
-          type: 'paginate',
-          channel: `paginate:${sectionId}`,
-          morph: morphOn,
+      // Match the corresponding wrapper by document order among all wrappers.
+      const index = [...document.querySelectorAll(this.wrapperSelector)].indexOf(wrapper);
+      const newWrapper = doc.querySelectorAll(this.wrapperSelector)[index] || doc.querySelector(this.wrapperSelector);
+      const items = newWrapper ? [...newWrapper.querySelectorAll(this.itemSelector)] : [];
+      return { url, doc, newWrapper, items };
+    },
+
+    // Liquid stops rendering the "next" button once the last page is reached.
+    sourceExhausted(newWrapper) {
+      return !newWrapper || !newWrapper.querySelector('[li-render-paginate="button"]');
+    },
+
+    // True once everything is loaded — either Liquid stopped rendering the
+    // "next" button, or a provided total says the list is complete.
+    isComplete(wrapper, newWrapper) {
+      const total = parseInt(newWrapper?.querySelector('[li-render-paginate="total"]')?.value, 10);
+      return this.sourceExhausted(newWrapper) || (Number.isFinite(total) && wrapper.__paginateLoaded >= total);
+    },
+
+    // Page/buffer state lives on the wrapper so it survives a re-render (which
+    // swaps innerHTML but keeps the node) and reparenting into a drawer.
+    seed(wrapper, list, pageParam) {
+      if (!wrapper.__paginateBuffer) wrapper.__paginateBuffer = [];
+      if (wrapper.__paginatePage != null) return;
+      wrapper.__paginatePage = (parseInt(new URLSearchParams(window.location.search).get(pageParam), 10) || 1) + 1;
+      wrapper.__paginateLoaded = list.querySelectorAll(this.itemSelector).length;
+      wrapper.__paginateDone = false;
+    },
+
+    // Fetch further pages until the buffer holds `want` items or the source runs
+    // out. Returns the last fetch (for syncTargets and the total input).
+    async fill(wrapper, want) {
+      let last = null;
+      while (wrapper.__paginateBuffer.length < want && !wrapper.__paginateDone) {
+        const result = await this.fetchPage(wrapper, wrapper.__paginatePage);
+        wrapper.__paginatePage += 1;
+        last = result;
+        result.items.forEach((item) => wrapper.__paginateBuffer.push(document.importNode(item, true)));
+        if (!result.items.length || this.sourceExhausted(result.newWrapper)) wrapper.__paginateDone = true;
+      }
+      return last;
+    },
+
+    // Move up to `count` buffered items into the list.
+    drain(wrapper, list, count) {
+      const items = wrapper.__paginateBuffer.splice(0, count);
+      items.forEach((item) => list.appendChild(item));
+      wrapper.__paginateLoaded += items.length;
+      return items.length;
+    },
+
+    // One Shopify page per click (default).
+    async advancePage(wrapper, list) {
+      const { url, doc, newWrapper, items } = await this.fetchPage(wrapper, wrapper.__paginatePage);
+      let added = 0;
+      if (items.length) {
+        items.forEach((item) => list.appendChild(document.importNode(item, true)));
+        added = items.length;
+        wrapper.__paginateLoaded += added;
+        wrapper.__paginatePage += 1;
+      }
+      return { added, url, doc, newWrapper, complete: !items.length || this.isComplete(wrapper, newWrapper) };
+    },
+
+    // Exactly `batch` items per click, buffered across page boundaries.
+    async advanceBatched(wrapper, list, batch) {
+      const last = await this.fill(wrapper, batch);
+      const added = this.drain(wrapper, list, batch);
+      const complete = wrapper.__paginateDone && !wrapper.__paginateBuffer.length;
+      return { added, url: last?.url, doc: last?.doc, newWrapper: last?.newWrapper, complete };
+    },
+
+    async loadMore(wrapper, button) {
+      const list = wrapper.querySelector('[li-render-paginate="list"]');
+      const { sectionId, pageParam, batch } = this.config(wrapper);
+      if (!sectionId || !list) return warn('[paginate] Missing section id or list element.');
+
+      this.seed(wrapper, list, pageParam);
+
+      const page = wrapper.__paginatePage;
+      emit('liquiflow:before-render', { type: 'paginate' });
+      emit('liquiflow:paginate-before-render', { page, batch });
+
+      const busyLabel = button.getAttribute('li-render-paginate-loading-text');
+      const idleLabel = button.textContent;
+      button.disabled = true;
+      if (busyLabel) button.textContent = busyLabel;
+
+      try {
+        const { added, url, doc, newWrapper, complete } = batch
+          ? await this.advanceBatched(wrapper, list, batch)
+          : await this.advancePage(wrapper, list);
+
+        if (added) {
+          this.updateCount(wrapper, wrapper.__paginateLoaded, newWrapper?.querySelector('[li-render-paginate="total"]')?.value);
+
+          // Reflect the last fetched page in the address bar (deep-link / back
+          // button), preserving existing query and without leaking section_id.
+          const address = new URLSearchParams(window.location.search);
+          address.set(pageParam, wrapper.__paginatePage - 1);
+          history.replaceState(null, '', `${window.location.pathname}?${address}`);
+
+          if (doc) syncTargets(doc);
+          emit('liquiflow:paginate-rendered', { url, mode: 'load-more', added });
+          emit('liquiflow:sections-rendered', { url, type: 'paginate' });
+        }
+
+        button.disabled = false;
+        if (busyLabel) button.textContent = idleLabel;
+        if (complete) button.style.display = 'none';
+      } catch (error) {
+        if (error.name !== 'AbortError') console.error('[liquiflow]', error.message || error);
+        button.disabled = false;
+        if (busyLabel) button.textContent = idleLabel;
+      }
+    },
+
+    // Bring the server-rendered first view to exactly `batch` items: park the
+    // surplus in the buffer, or top up from the next page when the section
+    // produced fewer items than one batch.
+    async balance(wrapper, list, batch) {
+      // Promo tiles already fill part of the first view's grid.
+      const target = Math.max(1, batch - this.foreignCells(list));
+      const rendered = [...list.querySelectorAll(this.itemSelector)];
+
+      if (rendered.length > target) {
+        rendered.slice(target).forEach((item) => {
+          list.removeChild(item);
+          wrapper.__paginateBuffer.push(item);
+        });
+        wrapper.__paginateLoaded = target;
+        return;
+      }
+
+      const short = target - rendered.length;
+      const button = wrapper.querySelector('[li-render-paginate="button"]');
+      if (!short || !button) return; // already exact, or there is no next page
+
+      try {
+        await this.fill(wrapper, short);
+        if (this.drain(wrapper, list, short)) {
+          emit('liquiflow:paginate-rendered', { mode: 'balance' });
+          emit('liquiflow:sections-rendered', { type: 'paginate' });
+        }
+        if (wrapper.__paginateDone && !wrapper.__paginateBuffer.length) button.style.display = 'none';
+      } catch (error) {
+        if (error.name !== 'AbortError') console.error('[liquiflow]', error.message || error);
+      }
+    },
+
+    // After a deep-link restore, keep a whole number of batches visible and park
+    // the remainder, so a reload lands on the same uniform grid.
+    trim(wrapper, list, batch) {
+      if (wrapper.__paginateDone) return; // nothing left to pull from — show all
+      const foreign = this.foreignCells(list);
+      const rendered = [...list.querySelectorAll(this.itemSelector)];
+      const cells = rendered.length + foreign;
+      const keep = Math.max(0, Math.max(batch, Math.floor(cells / batch) * batch) - foreign);
+      if (rendered.length <= keep) return;
+      rendered.slice(keep).forEach((item) => {
+        list.removeChild(item);
+        wrapper.__paginateBuffer.push(item);
+      });
+      wrapper.__paginateLoaded = keep;
+    },
+
+    // On load with ?page=N (a reload/deep-link), Shopify renders only page N.
+    // Fetch pages 1..N-1 and prepend them so the full accumulated range shows.
+    async restore(wrapper, uptoPage) {
+      const list = wrapper.querySelector('[li-render-paginate="list"]');
+      if (!list || uptoPage < 2) return;
+
+      const anchor = list.firstChild; // keep page N's items last
+      const earlier = [];
+      for (let p = 1; p < uptoPage; p++) earlier.push(p);
+
+      try {
+        // Parallel fetch, ordered insert.
+        const results = await Promise.all(earlier.map((p) => this.fetchPage(wrapper, p)));
+        results.forEach(({ items }) => {
+          items.forEach((item) => list.insertBefore(document.importNode(item, true), anchor));
+          wrapper.__paginateLoaded += items.length;
+        });
+        const batch = this.batchSize(wrapper);
+        if (batch) this.trim(wrapper, list, batch);
+        emit('liquiflow:paginate-rendered', { mode: 'restore' });
+        emit('liquiflow:sections-rendered', { type: 'paginate' });
+      } catch (error) {
+        if (error.name !== 'AbortError') console.error('[liquiflow]', error.message || error);
+      }
+    },
+
+    // A filter/sort render swaps the wrapper's contents but keeps the node, so
+    // the accumulated page and buffer state has to be dropped — otherwise the
+    // next click continues from the previous result set.
+    reset(wrapper) {
+      const list = wrapper.querySelector('[li-render-paginate="list"]');
+      wrapper.__paginatePage = 2; // a filtered response is always page 1
+      wrapper.__paginateLoaded = list ? list.querySelectorAll(this.itemSelector).length : 0;
+      wrapper.__paginateBuffer = [];
+      wrapper.__paginateDone = false;
+
+      const button = wrapper.querySelector('[li-render-paginate="button"]');
+      if (button) button.style.removeProperty('display');
+
+      const batch = this.batchSize(wrapper);
+      if (list && batch) this.balance(wrapper, list, batch);
+    },
+
+    gotoPage(wrapper, link) {
+      const { sectionId, morph: morphOn } = this.config(wrapper);
+      const href = link.getAttribute('href') || link.getAttribute('li-render-paginate-value');
+      if (!href) return;
+      const parsed = new URL(href, window.location.origin);
+      parsed.searchParams.set('section_id', sectionId);
+      history.replaceState(null, '', href);
+      renderSection({
+        url: parsed.toString(),
+        wrapperSelector: this.wrapperSelector,
+        type: 'paginate',
+        channel: `paginate:${sectionId}`,
+        morph: morphOn,
+      });
+    },
+
+    // Delegated on document so load-more and numbered links keep working after
+    // any re-render (filter/sort) that replaces the button, and inside modals.
+    wire() {
+      if (this.wired) return;
+      this.wired = true;
+      const closest = (e, selector) => (e.target instanceof Element ? e.target.closest(selector) : null);
+
+      document.addEventListener('click', (e) => {
+        const button = closest(e, '[li-render-paginate="button"]');
+        if (button) {
+          const wrapper = button.closest(this.wrapperSelector);
+          if (!wrapper) return;
+          e.preventDefault(); // stop native <a>/submit navigation
+          return this.loadMore(wrapper, button);
+        }
+        const link = closest(e, '[li-render-paginate="link"]');
+        if (link) {
+          const wrapper = link.closest(this.wrapperSelector);
+          if (!wrapper) return;
+          e.preventDefault();
+          this.gotoPage(wrapper, link);
+        }
+      });
+
+      // A new result set means the accumulated pages no longer apply.
+      document.addEventListener('liquiflow:filter-rendered', () => {
+        document.querySelectorAll(this.wrapperSelector).forEach((w) => {
+          if (w.__paginateInit) this.reset(w);
         });
       });
+    },
+
+    init(wrapper) {
+      this.wire();
+      const list = wrapper.querySelector('[li-render-paginate="list"]');
+      const { sectionId, pageParam, batch } = this.config(wrapper);
+      if (!sectionId || !list) return warn('[paginate] Missing section id or list element.');
+      if (wrapper.__paginateInit) return;
+      wrapper.__paginateInit = true;
+
+      // Seed page state from the URL; kept on the wrapper across re-renders.
+      const currentPage = parseInt(new URLSearchParams(window.location.search).get(pageParam), 10) || 1;
+      wrapper.__paginatePage = currentPage + 1;
+      wrapper.__paginateLoaded = list.querySelectorAll(this.itemSelector).length;
+      wrapper.__paginateBuffer = [];
+      wrapper.__paginateDone = false;
+
+      // Deep-link / reload to page N: restore the earlier pages that Shopify
+      // didn't render, so the full accumulated list is shown.
+      if (currentPage > 1) this.restore(wrapper, currentPage);
+      else if (batch) this.balance(wrapper, list, batch);
     },
   };
 
@@ -689,12 +941,84 @@
       const morphOn = wrapper.hasAttribute('li-render-morph') || config.morph;
       if (!sectionId) return warn('[product] Missing section id.');
 
+      if (!wrapper.querySelector('[li-render-product-variants]')) {
+        warn('[product] No li-render-product-variants map — an option combination that has no'
+          + ' variant will be sent as picked, and the stale values stay selected.', wrapper);
+      }
+
       wrapper.addEventListener('change', (e) => {
-        const control = e.target.closest('[li-render-product-option-id]');
+        // A <select> carries the ids on its <option>s, so match it by its own marker.
+        const control = e.target.closest('[li-render-product-option-id], [li-render-product-option-select]');
         if (!control || !wrapper.contains(control)) return;
         if ((control.type === 'radio' || control.type === 'checkbox') && !control.checked) return;
         this.render(wrapper, { sectionId, productUrl, morph: morphOn, control });
       });
+    },
+
+    // The option value just picked: on a radio/checkbox the control itself, on a
+    // <select> the chosen <option>.
+    changedValueId(control) {
+      if (!control) return null;
+      if (control.tagName === 'SELECT') return control.selectedOptions[0]?.getAttribute('li-render-product-option-id') || null;
+      return control.getAttribute('li-render-product-option-id');
+    },
+
+    /* --- Optional variant map ------------------------------------------
+     * <script type="application/json" li-render-product-variants>
+     *   { "options":  [[{ "id": "7", "name": "Blau" }, …], …],
+     *     "variants": [{ "options": ["Blau", "XS"], "available": true }, …] }
+     *
+     * `options` lists each option's values in option order, with `id` matching
+     * li-render-product-option-id; `variants` names the combinations that exist.
+     * Variants the theme leaves out are unreachable — that is how a shop keeps
+     * deactivated combinations out of the selectors.
+     * ------------------------------------------------------------------- */
+    variantMap(wrapper) {
+      const node = wrapper.querySelector('[li-render-product-variants]');
+      if (!node) return null;
+      try {
+        const raw = JSON.parse(node.textContent);
+        const options = (raw.options || []).map((values) => values.map((v) => ({ id: String(v.id), name: v.name })));
+        const idAt = (position, name) => options[position]?.find((v) => v.name === name)?.id;
+        const variants = (raw.variants || [])
+          .map((v) => ({ available: v.available !== false, ids: (v.options || []).map((name, i) => idAt(i, name)) }))
+          .filter((v) => v.ids.length && v.ids.every(Boolean));
+        return variants.length ? variants : null;
+      } catch (error) {
+        // Not warn(): this silently disables option resolution, so it has to be
+        // visible without debug mode.
+        console.warn('[liquiflow] [product] li-render-product-variants is not valid JSON —'
+          + ' option resolution is disabled for this product.', error.message || error);
+        return null;
+      }
+    },
+
+    /* Keep the value the shopper just picked and re-resolve the other options to
+     * a combination that exists: choosing a colour that does not come in the
+     * selected size moves the size to one it does come in. Without a variant map
+     * the selection is sent unchanged (previous behaviour). */
+    resolveSelection(wrapper, control, selected) {
+      const variants = this.variantMap(wrapper);
+      const changed = this.changedValueId(control);
+      if (!variants || !changed) return selected;
+
+      // The combination exists — a sold-out one included, so the shopper stays on
+      // it and sees it marked unavailable instead of being moved off it.
+      const sameSet = (a, b) => a.length === b.length && a.every((id) => b.includes(id));
+      if (variants.some((v) => sameSet(v.ids, selected))) return selected;
+
+      const position = variants.find((v) => v.ids.includes(changed))?.ids.indexOf(changed);
+      if (position == null || position < 0) return selected;
+
+      let pool = variants.filter((v) => v.ids[position] === changed);
+      const inStock = pool.filter((v) => v.available);
+      if (inStock.length) pool = inStock;
+      if (!pool.length) return selected;
+
+      // Closest combination: the one keeping the most of the other chosen values.
+      // Ties go to the product's own variant order.
+      const kept = (v) => v.ids.reduce((n, id, i) => n + (i !== position && selected.includes(id) ? 1 : 0), 0);
+      return pool.reduce((best, v) => (kept(v) > kept(best) ? v : best), pool[0]).ids;
     },
 
     collectOptionValues(wrapper) {
@@ -718,7 +1042,7 @@
       const isSibling = !!control?.getAttribute('li-render-product-url') &&
         new URL(targetUrl, window.location.origin).pathname !== new URL(productUrl, window.location.origin).pathname;
 
-      const optionValues = this.collectOptionValues(wrapper);
+      const optionValues = this.resolveSelection(wrapper, control, this.collectOptionValues(wrapper));
       const url = new URL(targetUrl, window.location.origin);
       url.searchParams.set('section_id', sectionId);
       if (optionValues.length) url.searchParams.set('option_values', optionValues.join(','));
@@ -777,7 +1101,7 @@
     scope.querySelectorAll('[li-render-filter="wrapper"]').forEach((w) => Filter.init(w));
     scope.querySelectorAll('[li-render-search="wrapper"]').forEach((w) => Search.init(w));
     scope.querySelectorAll('[li-render-recommended="wrapper"]').forEach((w) => Recommended.init(w));
-    scope.querySelectorAll('[li-render-paginate="wrapper"]').forEach((w, i) => Pagination.init(w, i));
+    scope.querySelectorAll('[li-render-paginate="wrapper"]').forEach((w) => Pagination.init(w));
     scope.querySelectorAll('[li-render-product="wrapper"]').forEach((w) => Product.init(w));
   };
 
@@ -791,6 +1115,8 @@
     instances: [],
     render: renderSection,
     refresh: boot,
+    product: Product,
+    pagination: Pagination,
     _internal: { morph, debounce, getSectionId, nextSignal },
   };
 
